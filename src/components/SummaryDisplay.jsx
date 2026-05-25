@@ -25,9 +25,9 @@ const SectionCard = ({ title, content, icon, color }) => {
 const SummaryDisplay = ({ summary }) => {
   if (!summary) return null;
 
-  const { page1Summary, page2Summary, overallConclusion } = summary;
+  const { page1Summary, page2Summary, conclusion } = summary;
 
-  const totalWords = [page1Summary, page2Summary, overallConclusion]
+  const totalWords = [page1Summary, page2Summary, conclusion]
     .join(" ")
     .trim()
     .split(/\s+/)
@@ -69,8 +69,8 @@ const SummaryDisplay = ({ summary }) => {
       />
 
       <SectionCard
-        title="Overall Conclusion"
-        content={overallConclusion}
+        title="Conclusion"
+        content={conclusion}
         icon="🧠"
         color={{
           bg: "bg-green-50",

@@ -4,7 +4,7 @@ import FileUploader from "./components/FileUploader";
 import CameraCapture from "./components/CameraCapture";
 import { runOCR } from "./services/ocrService";
 import { extractTextFromPDF } from "./services/pdfService";
-import { summariseWithGemini } from "./services/geminiService";
+import { summariseText } from "./services/geminiService"; // ✅ FIX 1: was summariseWithGemini
 
 export default function App() {
   const [mode, setMode] = useState("upload");
@@ -99,8 +99,8 @@ export default function App() {
     setSummary(null);
 
     try {
-      setStatus("Sending text to Gemini AI...");
-      const result = await summariseWithGemini(
+      setStatus("Sending text to AI...");
+      const result = await summariseText( // ✅ FIX 2: was summariseWithGemini
         extractedText.page1,
         extractedText.page2
       );
@@ -116,7 +116,7 @@ export default function App() {
 
   const handleCopy = () => {
     if (!summary) return;
-    const text = `PAGE 1 SUMMARY:\n${summary.page1Summary}\n\nPAGE 2 SUMMARY:\n${summary.page2Summary}\n\nOVERALL CONCLUSION:\n${summary.conclusion}`;
+    const text = `PAGE 1 SUMMARY:\n${summary.page1Summary}\n\nPAGE 2 SUMMARY:\n${summary.page2Summary}\n\nOVERALL CONCLUSION:\n${summary.overallConclusion}`; // ✅ FIX 3
     navigator.clipboard.writeText(text).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2500);
@@ -124,7 +124,7 @@ export default function App() {
   };
 
   const wordCount = summary
-    ? [summary.page1Summary, summary.page2Summary, summary.conclusion]
+    ? [summary.page1Summary, summary.page2Summary, summary.overallConclusion] // ✅ FIX 3
         .join(" ")
         .split(/\s+/)
         .filter(Boolean).length
@@ -238,7 +238,7 @@ export default function App() {
                 className="px-8 py-3 bg-purple-600 text-white rounded-xl font-semibold
                            hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition"
               >
-                {summarising ? "⏳ Summarising..." : "✨ Summarise with Gemini"}
+                {summarising ? "⏳ Summarising..." : "✨ Summarise with AI"}
               </button>
             </div>
           </div>
@@ -281,7 +281,7 @@ export default function App() {
               <h3 className="font-semibold text-emerald-700 mb-2 text-sm uppercase tracking-wide">
                 🎯 Overall Conclusion
               </h3>
-              <p className="text-gray-700 text-sm leading-relaxed">{summary.conclusion}</p>
+              <p className="text-gray-700 text-sm leading-relaxed">{summary.overallConclusion}</p> {/* ✅ FIX 3 */}
             </div>
           </div>
         )}
