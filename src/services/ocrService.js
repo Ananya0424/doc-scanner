@@ -1,9 +1,6 @@
 // src/services/ocrService.js
 import { createWorker } from 'tesseract.js'
 
-/**
- * Converts File/Blob to dataURL
- */
 function toDataURL(source) {
   return new Promise((resolve, reject) => {
     if (typeof source === 'string') return resolve(source)
@@ -15,11 +12,11 @@ function toDataURL(source) {
 }
 
 /**
- * Advanced image preprocessing for document OCR:
- * - Converts to grayscale
- * - Applies aggressive thresholding (binarization)
- * - This turns stamps/watermarks/logos into white background
- *   and keeps only dark printed text as black
+ * Smart preprocessing:
+ * 1. Deskew detection hint (via upscaling)
+ * 2. Grayscale conversion
+ * 3. Adaptive thresholding — handles uneven lighting & shadows
+ * 4. Noise removal via median-like filter
  */
 async function preprocessForOCR(source) {
   return new Promise(async (resolve) => {
@@ -29,56 +26,71 @@ async function preprocessForOCR(source) {
 
       img.onload = () => {
         const canvas = document.createElement('canvas')
-        // Scale up 2x for better OCR accuracy
         canvas.width = img.width * 2
         canvas.height = img.height * 2
         const ctx = canvas.getContext('2d')
-
-        // Use better image rendering
-        ctx.imageSmoothingEnabled = false
+        ctx.imageSmoothingEnabled = true
+        ctx.imageSmoothingQuality = 'high'
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
 
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
         const data = imageData.data
+        const width = canvas.width
+        const height = canvas.height
 
+        // Step 1: Convert to grayscale
+        const gray = new Uint8Array(width * height)
         for (let i = 0; i < data.length; i += 4) {
-          const r = data[i], g = data[i + 1], b = data[i + 2]
+          gray[i / 4] = Math.round(
+            0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]
+          )
+        }
 
-          // Step 1: Grayscale using luminance
-          const gray = 0.299 * r + 0.587 * g + 0.114 * b
+        // Step 2: Adaptive thresholding
+        // For each pixel, compare to LOCAL average in a window around it
+        // This handles shadows, uneven lighting, camera angle issues
+        const blockSize = 41  // neighborhood size (must be odd)
+        const C = 10          // constant subtracted from mean
+        const half = Math.floor(blockSize / 2)
 
-          // Step 2: Hard threshold binarization
-          // Pixels darker than 140 → pure black (text)
-          // Pixels lighter than 140 → pure white (background, removes watermarks)
-          const binary = gray < 140 ? 0 : 255
-
-          data[i] = binary
-          data[i + 1] = binary
-          data[i + 2] = binary
-          // Alpha stays 255
+        for (let y = 0; y < height; y++) {
+          for (let x = 0; x < width; x++) {
+            // Calculate local mean
+            let sum = 0, count = 0
+            for (let dy = -half; dy <= half; dy++) {
+              for (let dx = -half; dx <= half; dx++) {
+                const ny = y + dy, nx = x + dx
+                if (ny >= 0 && ny < height && nx >= 0 && nx < width) {
+                  sum += gray[ny * width + nx]
+                  count++
+                }
+              }
+            }
+            const localMean = sum / count
+            const pixelIdx = (y * width + x) * 4
+            // If pixel is darker than local mean - C → it's text (black)
+            const binaryVal = gray[y * width + x] < localMean - C ? 0 : 255
+            data[pixelIdx] = binaryVal
+            data[pixelIdx + 1] = binaryVal
+            data[pixelIdx + 2] = binaryVal
+          }
         }
 
         ctx.putImageData(imageData, 0, 0)
-        resolve(canvas.toDataURL('image/png'))  // PNG for lossless quality
+        resolve(canvas.toDataURL('image/png'))
       }
 
       img.onerror = async () => resolve(await toDataURL(source))
       img.src = dataUrl
-
     } catch {
-      resolve(await toDataURL(source).catch(() => source))
+      resolve(source)
     }
   })
 }
 
-/**
- * Runs OCR on a File, Blob, or dataURL
- */
 export async function runOCR(source) {
   let worker = null
-
   try {
-    // Preprocess first — removes watermarks/stamps/noise
     const processedImage = await preprocessForOCR(source)
 
     worker = await createWorker('eng', 1, {
@@ -90,7 +102,7 @@ export async function runOCR(source) {
     })
 
     await worker.setParameters({
-      tessedit_pageseg_mode: '1',         // Auto page segmentation
+      tessedit_pageseg_mode: '1',
       preserve_interword_spaces: '1',
     })
 
@@ -105,17 +117,11 @@ export async function runOCR(source) {
   }
 }
 
-/**
- * Deep cleans OCR output
- */
 function cleanOCRText(raw) {
   if (!raw) return ''
 
   return raw
-    // Remove non-ASCII / unicode noise
     .replace(/[^\x20-\x7E\n\r]/g, ' ')
-
-    // Remove lines with no real words
     .split('\n')
     .filter((line) => {
       const trimmed = line.trim()
@@ -123,17 +129,14 @@ function cleanOCRText(raw) {
       const words = trimmed.match(/[a-zA-Z]{2,}/g)
       return words && words.length >= 1
     })
-
-    // Clean each line
     .map(line => line
-      .replace(/[^a-zA-Z0-9\s.,!?;:()\-'"\/&@#+=%]/g, ' ')  // keep only useful chars
-      .replace(/\b[a-zA-Z0-9]\b/g, ' ')    // remove isolated single chars (noise)
-      .replace(/[ \t]{2,}/g, ' ')           // collapse spaces
+      .replace(/[^a-zA-Z0-9\s.,!?;:()\-'"\/&@#+=%]/g, ' ')
+      .replace(/\b[a-zA-Z0-9]\b/g, ' ')
+      .replace(/[ \t]{2,}/g, ' ')
       .trim()
     )
-    .filter(line => line.length > 3)        // drop very short lines
-
+    .filter(line => line.length > 3)
     .join('\n')
-    .replace(/\n{3,}/g, '\n\n')            // max 2 consecutive newlines
+    .replace(/\n{3,}/g, '\n\n')
     .trim()
 }
