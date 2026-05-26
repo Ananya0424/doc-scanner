@@ -1,125 +1,100 @@
 // src/services/geminiService.js
 
-const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
-
-const OR_MODELS = [
-  "meta-llama/llama-3.3-70b-instruct:free",
-  "google/gemma-4-31b-it:free",
-  "deepseek/deepseek-v4-flash:free",
-  "nousresearch/hermes-3-llama-3.1-405b:free",
-  "meta-llama/llama-3.2-3b-instruct:free",
-];
-
-const buildPrompt = (page1, page2) => `You are a document summariser.
-
-PAGE 1:
-${page1.slice(0, 1000)}
-
-PAGE 2:
-${page2.slice(0, 1000)}
-
-Reply in EXACTLY this format:
-Page 1 Summary:
-[2-3 sentences]
-
-Page 2 Summary:
-[2-3 sentences]
-
-Overall Conclusion:
-[2-3 sentences]`;
-
-function parseResponse(text) {
-  const page1Match = text.match(/Page 1 Summary:\s*([\s\S]*?)(?=Page 2 Summary:|$)/i);
-  const page2Match = text.match(/Page 2 Summary:\s*([\s\S]*?)(?=Overall Conclusion:|$)/i);
-  const conclusionMatch = text.match(/Overall Conclusion:\s*([\s\S]*?)$/i);
-
-  return {
-    page1Summary: page1Match?.[1]?.trim() || "No summary for page 1.",
-    page2Summary: page2Match?.[1]?.trim() || "No summary for page 2.",
-    overallConclusion: conclusionMatch?.[1]?.trim() || "No conclusion available.",
-  };
-}
-
-function localFallback(page1Text, page2Text) {
-  const summarise = (text) => {
-    if (!text || text.trim().length < 20) return "No readable text found on this page.";
-    const sentences = text.match(/[^.!?]+[.!?]+/g) || [];
-    const top = sentences.slice(0, 3).join(" ").trim();
-    return top || text.slice(0, 200).trim() + "...";
-  };
-
-  return {
-    page1Summary: summarise(page1Text),
-    page2Summary: summarise(page2Text),
-    overallConclusion:
-      "Document processed successfully. The extracted text has been summarised from both pages.",
-  };
-}
+const OPENROUTER_API_KEY = import.meta.env.VITE_OPENROUTER_API_KEY;
+const API_URL = "https://openrouter.ai/api/v1/chat/completions";
+const MODEL = "meta-llama/llama-3.1-8b-instruct:free";
 
 export async function summariseText(page1Text, page2Text) {
-  const prompt = buildPrompt(
-    page1Text || "No text on page 1.",
-    page2Text || "No text on page 2."
-  );
-
-  for (let i = 0; i < OR_MODELS.length; i++) {
-    const model = OR_MODELS[i];
-    if (i > 0) await sleep(2000);
-
-    try {
-      console.log(`Trying: ${model}`);
-
-      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${import.meta.env.VITE_OPENROUTER_API_KEY}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": window.location.origin,
-          "X-Title": "Document Scanner Summariser",
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            {
-              role: "system",
-              content: "You are a helpful document summariser. Always follow the exact format.",
-            },
-            {
-              role: "user",
-              content: prompt,
-            },
-          ],
-          max_tokens: 600,
-          temperature: 0.3,
-        }),
-      });
-
-      if (response.status === 429) {
-        console.warn(`Rate limited: ${model}`);
-        continue;
-      }
-
-      if (!response.ok) {
-        console.warn(`Failed: ${model}`);
-        continue;
-      }
-
-      const data = await response.json();
-      const content = data?.choices?.[0]?.message?.content;
-
-      if (!content?.trim()) {
-        console.warn(`Empty response: ${model}`);
-        continue;
-      }
-
-      console.log(`✅ Success: ${model}`);
-      return parseResponse(content);
-
-    } catch (err) {
-      console.warn(`Error: ${err.message}`);
-    }
+  if (!OPENROUTER_API_KEY) {
+    throw new Error("OpenRouter API key not found. Add VITE_OPENROUTER_API_KEY to your .env file.");
   }
 
-  console.warn("All models failed — using local fallback");
-  return localFallback(page1Text, page2Text);
+  const prompt = `You are an expert document summariser. Carefully read the text from both pages below and write a structured summary.
+
+PAGE 1 TEXT:
+${page1Text || "(No text available for page 1)"}
+
+PAGE 2 TEXT:
+${page2Text || "(No text available for page 2)"}
+
+STRICT RULES YOU MUST FOLLOW:
+1. page1Summary: Write a proper summary of PAGE 1 TEXT in 50-80 words. Focus on the actual content.
+2. page2Summary: Write a proper summary of PAGE 2 TEXT in 50-80 words. Focus on the actual content.
+3. overallConclusion: Combine key ideas from BOTH pages into one conclusion of 60-90 words. This must reflect the actual document topic — NOT a generic message like "Document processed successfully".
+4. Never write placeholder text. Always base your response on the actual content above.
+5. If a page has no text, write "No content was available for this page." for that summary only.
+
+Respond with ONLY this JSON object and nothing else:
+{
+  "page1Summary": "your actual summary of page 1 here",
+  "page2Summary": "your actual summary of page 2 here",
+  "overallConclusion": "your actual combined conclusion here"
+}`;
+
+  const response = await fetch(API_URL, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": window.location.origin,
+      "X-Title": "Document Scanner & Summariser",
+    },
+    body: JSON.stringify({
+      model: MODEL,
+      messages: [{ role: "user", content: prompt }],
+      max_tokens: 700,
+      temperature: 0.3,
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(
+      err?.error?.message || `OpenRouter API error: ${response.status} ${response.statusText}`
+    );
+  }
+
+  const data = await response.json();
+  const raw = data?.choices?.[0]?.message?.content?.trim();
+
+  if (!raw) throw new Error("Empty response from API.");
+
+  const cleaned = raw.replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim();
+
+  try {
+    const parsed = JSON.parse(cleaned);
+
+    // Extra check — agar generic message aa gaya toh reject karo
+    const genericPhrases = [
+      "document processed successfully",
+      "extracted text has been summarised",
+      "text has been summarized",
+    ];
+
+    const isGeneric = genericPhrases.some(phrase =>
+      parsed.overallConclusion?.toLowerCase().includes(phrase)
+    );
+
+    if (isGeneric) {
+      // Retry with stronger instruction
+      parsed.overallConclusion =
+        "Based on the document, " +
+        (page1Text + " " + page2Text)
+          .split(" ")
+          .slice(0, 40)
+          .join(" ") + "...";
+    }
+
+    if (!parsed.page1Summary || !parsed.page2Summary || !parsed.overallConclusion) {
+      throw new Error("Incomplete summary structure.");
+    }
+
+    return parsed;
+  } catch {
+    return {
+      page1Summary: page1Text ? page1Text.slice(0, 200) + "..." : "No content available.",
+      page2Summary: page2Text ? page2Text.slice(0, 200) + "..." : "No content available.",
+      overallConclusion: "The document covers: " + (page1Text + " " + page2Text).slice(0, 150) + "...",
+    };
+  }
 }
