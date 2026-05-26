@@ -17,9 +17,18 @@ async function callAPI(prompt, retries = 3) {
         },
         body: JSON.stringify({
           model: MODEL,
-          messages: [{ role: "user", content: prompt }],
-          max_tokens: 300,
-          temperature: 0.3,
+          messages: [
+            {
+              role: "system",
+              content: `You are a professional document analyst. Your job is to read document text and produce clean, accurate, human-readable summaries. Always write in clear English. Never use generic filler phrases like "document processed successfully" or "text has been summarised". Base everything strictly on the actual content provided.`,
+            },
+            {
+              role: "user",
+              content: prompt,
+            },
+          ],
+          max_tokens: 400,
+          temperature: 0.2,
         }),
       });
 
@@ -33,7 +42,7 @@ async function callAPI(prompt, retries = 3) {
 
       const data = await response.json();
       const text = data?.choices?.[0]?.message?.content?.trim() || "";
-      console.log("API success:", text.slice(0, 100));
+      console.log("API success:", text.slice(0, 150));
       return text;
 
     } catch (err) {
@@ -45,15 +54,14 @@ async function callAPI(prompt, retries = 3) {
   return "";
 }
 
-// Actual text se smart fallback summary banao — generic nahi
+// Actual text se meaningful fallback — never generic
 function buildFallbackSummary(text) {
-  if (!text || text.trim().length < 10) return "No content available.";
-  return text
+  if (!text || text.trim().length < 10) return "No readable content found on this page.";
+  const sentences = text
     .split(/[.!?]+/)
     .map((s) => s.trim())
-    .filter((s) => s.length > 20)
-    .slice(0, 3)
-    .join(". ") + ".";
+    .filter((s) => s.length > 20);
+  return sentences.slice(0, 3).join(". ") + ".";
 }
 
 export async function summariseText(page1Text, page2Text) {
@@ -67,28 +75,50 @@ export async function summariseText(page1Text, page2Text) {
   // ── PAGE 1 SUMMARY ──────────────────────────────────────────────
   const p1Raw = hasPage1
     ? await callAPI(
-        `Summarise this text in 2-3 sentences. Write only the summary, nothing else:\n\n${page1Text}`
+        `Read the following text extracted from Page 1 of a document. Write a clear and informative summary in 3-4 sentences. 
+         
+Cover these points:
+- What is this page about?
+- What are the key details or facts mentioned?
+- Who is involved (if any person, organization, date is mentioned)?
+
+Write only the summary. Do not add any intro like "This page is about" — just write the summary directly.
+
+Page 1 text:
+${page1Text}`
       )
     : "";
+
   const page1Summary = p1Raw.length > 20
     ? p1Raw
     : hasPage1
       ? buildFallbackSummary(page1Text)
-      : "No content on page 1.";
+      : "No content found on page 1.";
 
   await delay(2000);
 
   // ── PAGE 2 SUMMARY ──────────────────────────────────────────────
   const p2Raw = hasPage2
     ? await callAPI(
-        `Summarise this text in 2-3 sentences. Write only the summary, nothing else:\n\n${page2Text}`
+        `Read the following text extracted from Page 2 of a document. Write a clear and informative summary in 3-4 sentences.
+
+Cover these points:
+- What is this page about?
+- What are the key details or facts mentioned?
+- Who is involved (if any person, organization, date is mentioned)?
+
+Write only the summary. Do not add any intro like "This page is about" — just write the summary directly.
+
+Page 2 text:
+${page2Text}`
       )
     : "";
+
   const page2Summary = p2Raw.length > 20
     ? p2Raw
     : hasPage2
       ? buildFallbackSummary(page2Text)
-      : "No content on page 2.";
+      : "No content found on page 2.";
 
   await delay(2000);
 
@@ -96,25 +126,43 @@ export async function summariseText(page1Text, page2Text) {
   let conclusionPrompt = "";
 
   if (hasPage1 && hasPage2) {
-    // Dono pages uploaded hain
-    conclusionPrompt = `Two page summaries are given below. Write an overall conclusion in 2-3 sentences about what the full document covers and its main takeaway. Write only the conclusion, nothing else.
+    conclusionPrompt = `You have summaries of two pages from the same document. Write a well-structured overall conclusion in 3-4 sentences.
 
-Page 1: ${page1Summary}
-Page 2: ${page2Summary}
+Your conclusion must:
+- State what the full document is about
+- Highlight the most important information from both pages
+- End with the key takeaway or significance of this document
+
+Write only the conclusion. No bullet points. No headers. Just clear paragraph text.
+
+Page 1 summary: ${page1Summary}
+Page 2 summary: ${page2Summary}
 
 Overall conclusion:`;
 
   } else if (hasPage1) {
-    // Sirf Page 1 upload hua hai
-    conclusionPrompt = `Based on this document page summary, write a conclusion in 2-3 sentences about what this document is about and its main takeaway. Write only the conclusion, nothing else.
+    conclusionPrompt = `Based on this document page summary, write a conclusion in 3-4 sentences.
+
+Your conclusion must:
+- State what this document is about
+- Highlight the most important information
+- End with the key takeaway
+
+Write only the conclusion. No bullet points. Just clear paragraph text.
 
 Page summary: ${page1Summary}
 
 Conclusion:`;
 
   } else if (hasPage2) {
-    // Sirf Page 2 upload hua hai
-    conclusionPrompt = `Based on this document page summary, write a conclusion in 2-3 sentences about what this document is about and its main takeaway. Write only the conclusion, nothing else.
+    conclusionPrompt = `Based on this document page summary, write a conclusion in 3-4 sentences.
+
+Your conclusion must:
+- State what this document is about
+- Highlight the most important information
+- End with the key takeaway
+
+Write only the conclusion. No bullet points. Just clear paragraph text.
 
 Page summary: ${page2Summary}
 
@@ -123,12 +171,11 @@ Conclusion:`;
 
   const conRaw = conclusionPrompt ? await callAPI(conclusionPrompt) : "";
 
-  // Fallback — API fail hone par actual summaries se banao, generic nahi
   const overallConclusion =
     conRaw.length > 20
       ? conRaw
       : hasPage1 && hasPage2
-        ? `This document discusses ${page1Summary.slice(0, 120)}. It further covers ${page2Summary.slice(0, 120)}.`
+        ? `${page1Summary} Furthermore, ${page2Summary}`
         : hasPage1
           ? page1Summary
           : page2Summary;
