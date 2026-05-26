@@ -2,33 +2,38 @@
 
 const OPENROUTER_API_KEY = import.meta.env.VITE_OPENROUTER_API_KEY;
 const API_URL = "https://openrouter.ai/api/v1/chat/completions";
-const MODEL = "meta-llama/llama-3.1-8b-instruct:free";
+const MODEL = "google/gemma-3-4b-it:free";
 
 export async function summariseText(page1Text, page2Text) {
   if (!OPENROUTER_API_KEY) {
     throw new Error("OpenRouter API key not found. Add VITE_OPENROUTER_API_KEY to your .env file.");
   }
 
-  const prompt = `You are an expert document summariser. Carefully read the text from both pages below and write a structured summary.
+  const hasPage1 = page1Text && page1Text.trim().length > 10;
+  const hasPage2 = page2Text && page2Text.trim().length > 10;
 
-PAGE 1 TEXT:
-${page1Text || "(No text available for page 1)"}
+  const prompt = `You are a document summariser. Read the following document text carefully and summarise it.
 
-PAGE 2 TEXT:
-${page2Text || "(No text available for page 2)"}
+PAGE 1:
+${hasPage1 ? page1Text : "No text available"}
 
-STRICT RULES YOU MUST FOLLOW:
-1. page1Summary: Write a proper summary of PAGE 1 TEXT in 50-80 words. Focus on the actual content.
-2. page2Summary: Write a proper summary of PAGE 2 TEXT in 50-80 words. Focus on the actual content.
-3. overallConclusion: Combine key ideas from BOTH pages into one conclusion of 60-90 words. This must reflect the actual document topic — NOT a generic message like "Document processed successfully".
-4. Never write placeholder text. Always base your response on the actual content above.
-5. If a page has no text, write "No content was available for this page." for that summary only.
+PAGE 2:
+${hasPage2 ? page2Text : "No text available"}
 
-Respond with ONLY this JSON object and nothing else:
+Write a JSON response with these three fields:
+- page1Summary: A 50-80 word summary of what PAGE 1 says. Write about the actual topic and content of page 1.
+- page2Summary: A 50-80 word summary of what PAGE 2 says. Write about the actual topic and content of page 2.
+- overallConclusion: A 60-90 word conclusion that combines the main ideas from both pages. This must be about the document topic, not about the process of summarising.
+
+Example of WRONG overallConclusion: "Document processed successfully. The text has been summarised."
+Example of CORRECT overallConclusion: "Artificial Intelligence is transforming modern industries by enabling machines to learn and reason. From healthcare to autonomous vehicles, AI applications are growing rapidly. While challenges around ethics and job displacement remain, AI presents enormous opportunities for innovation and human progress."
+
+Return ONLY the JSON object. No extra text.
+
 {
-  "page1Summary": "your actual summary of page 1 here",
-  "page2Summary": "your actual summary of page 2 here",
-  "overallConclusion": "your actual combined conclusion here"
+  "page1Summary": "...",
+  "page2Summary": "...",
+  "overallConclusion": "..."
 }`;
 
   const response = await fetch(API_URL, {
@@ -41,9 +46,18 @@ Respond with ONLY this JSON object and nothing else:
     },
     body: JSON.stringify({
       model: MODEL,
-      messages: [{ role: "user", content: prompt }],
+      messages: [
+        {
+          role: "system",
+          content: "You are a helpful document summariser. Always summarise the actual content of the document. Never write generic phrases like 'Document processed successfully' or 'Text has been summarised'. Always write about the actual topic."
+        },
+        {
+          role: "user",
+          content: prompt
+        }
+      ],
       max_tokens: 700,
-      temperature: 0.3,
+      temperature: 0.2,
     }),
   });
 
@@ -59,42 +73,50 @@ Respond with ONLY this JSON object and nothing else:
 
   if (!raw) throw new Error("Empty response from API.");
 
-  const cleaned = raw.replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim();
+  // Strip markdown fences
+  const cleaned = raw
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
 
   try {
     const parsed = JSON.parse(cleaned);
 
-    // Extra check — agar generic message aa gaya toh reject karo
+    // Detect generic conclusion and replace with content-based one
     const genericPhrases = [
-      "document processed successfully",
-      "extracted text has been summarised",
+      "document processed",
+      "text has been summarised",
       "text has been summarized",
+      "extracted text",
+      "successfully summarised",
+      "successfully summarized",
     ];
 
-    const isGeneric = genericPhrases.some(phrase =>
+    const conclusionIsGeneric = genericPhrases.some(phrase =>
       parsed.overallConclusion?.toLowerCase().includes(phrase)
     );
 
-    if (isGeneric) {
-      // Retry with stronger instruction
-      parsed.overallConclusion =
-        "Based on the document, " +
-        (page1Text + " " + page2Text)
-          .split(" ")
-          .slice(0, 40)
-          .join(" ") + "...";
+    if (conclusionIsGeneric) {
+      // Build conclusion from actual text
+      const combined = [page1Text, page2Text].filter(Boolean).join(" ");
+      const words = combined.split(/\s+/).slice(0, 60).join(" ");
+      parsed.overallConclusion = `Based on the document content: ${words}...`;
     }
 
-    if (!parsed.page1Summary || !parsed.page2Summary || !parsed.overallConclusion) {
-      throw new Error("Incomplete summary structure.");
-    }
-
-    return parsed;
-  } catch {
     return {
-      page1Summary: page1Text ? page1Text.slice(0, 200) + "..." : "No content available.",
-      page2Summary: page2Text ? page2Text.slice(0, 200) + "..." : "No content available.",
-      overallConclusion: "The document covers: " + (page1Text + " " + page2Text).slice(0, 150) + "...",
+      page1Summary: parsed.page1Summary || "No content available for page 1.",
+      page2Summary: parsed.page2Summary || "No content available for page 2.",
+      overallConclusion: parsed.overallConclusion || "No conclusion available.",
+    };
+
+  } catch {
+    // JSON parse failed — extract meaningful text from raw response
+    const combined = [page1Text, page2Text].filter(Boolean).join(" ");
+    return {
+      page1Summary: hasPage1 ? page1Text.trim().slice(0, 200) + "..." : "No content available for page 1.",
+      page2Summary: hasPage2 ? page2Text.trim().slice(0, 200) + "..." : "No content available for page 2.",
+      overallConclusion: "The document discusses: " + combined.split(/\s+/).slice(0, 50).join(" ") + "...",
     };
   }
 }
