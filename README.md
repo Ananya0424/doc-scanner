@@ -192,10 +192,7 @@ npm run build
 
 ## 👩‍💻 Developer
 
-**Ananya Sharma**
-Internship Task — Metaverse Company
-Built with React + Vite + Tailwind + OpenRouter AI
-
+**Ananya Sharma** — ananyasharma242004@gmail.com
 ---
 
 ## 📄 License
