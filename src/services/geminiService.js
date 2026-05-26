@@ -1,5 +1,4 @@
 // src/services/geminiService.js
-// Now powered by OpenRouter API
 
 const MODELS = [
   "meta-llama/llama-3.3-70b-instruct:free",
@@ -9,25 +8,26 @@ const MODELS = [
   "meta-llama/llama-3.2-3b-instruct:free",
 ];
 
-const buildPrompt = (text) => `
-You are a document summariser. Read the following document text and provide a structured summary.
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-DOCUMENT TEXT:
-${text}
+const buildPrompt = (page1, page2) => `Summarise these two document pages.
 
-Respond in EXACTLY this format and nothing else:
+PAGE 1 TEXT:
+${page1.slice(0, 1500)}
+
+PAGE 2 TEXT:
+${page2.slice(0, 1500)}
+
+Reply in this exact format:
 
 Page 1 Summary:
-[2-4 sentences summarising page 1]
+[2-3 sentences about page 1]
 
 Page 2 Summary:
-[2-4 sentences summarising page 2]
+[2-3 sentences about page 2]
 
 Overall Conclusion:
-[2-3 sentences with the key takeaway]
-
-Keep the total response between 150-250 words. Be concise and factual.
-`.trim();
+[2-3 sentences conclusion]`;
 
 function parseResponse(text) {
   const page1Match = text.match(/Page 1 Summary:\s*([\s\S]*?)(?=Page 2 Summary:|$)/i);
@@ -35,19 +35,29 @@ function parseResponse(text) {
   const conclusionMatch = text.match(/Overall Conclusion:\s*([\s\S]*?)$/i);
 
   return {
-    page1Summary: page1Match?.[1]?.trim() || "No summary available for page 1.",
-    page2Summary: page2Match?.[1]?.trim() || "No summary available for page 2.",
+    page1Summary: page1Match?.[1]?.trim() || "No summary for page 1.",
+    page2Summary: page2Match?.[1]?.trim() || "No summary for page 2.",
     overallConclusion: conclusionMatch?.[1]?.trim() || "No conclusion available.",
   };
 }
 
 export async function summariseText(page1Text, page2Text) {
-  const combinedText = `--- PAGE 1 ---\n${page1Text}\n\n--- PAGE 2 ---\n${page2Text}`;
-  const prompt = buildPrompt(combinedText);
+  const prompt = buildPrompt(
+    page1Text || "No text extracted from page 1.",
+    page2Text || "No text extracted from page 2."
+  );
 
   let lastError = null;
 
-  for (const model of MODELS) {
+  for (let i = 0; i < MODELS.length; i++) {
+    const model = MODELS[i];
+
+    // Wait 2 seconds before each retry (except first attempt)
+    if (i > 0) {
+      console.log(`Waiting 2s before trying next model...`);
+      await sleep(2000);
+    }
+
     try {
       console.log(`Trying model: ${model}`);
 
@@ -61,11 +71,60 @@ export async function summariseText(page1Text, page2Text) {
         },
         body: JSON.stringify({
           model,
-          messages: [{ role: "user", content: prompt }],
-          max_tokens: 500,
-          temperature: 0.4,
+          messages: [
+            {
+              role: "system",
+              content: "You are a helpful document summariser. Always follow the exact format requested.",
+            },
+            {
+              role: "user",
+              content: prompt,
+            },
+          ],
+          max_tokens: 600,
+          temperature: 0.3,
         }),
       });
+
+      // Handle 429 specifically — wait longer and retry same model once
+      if (response.status === 429) {
+        console.warn(`Model ${model} rate limited (429), waiting 5s...`);
+        await sleep(5000);
+
+        const retry = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${import.meta.env.VITE_OPENROUTER_API_KEY}`,
+            "Content-Type": "application/json",
+            "HTTP-Referer": window.location.origin,
+            "X-Title": "Document Scanner Summariser",
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              { role: "system", content: "You are a helpful document summariser. Always follow the exact format requested." },
+              { role: "user", content: prompt },
+            ],
+            max_tokens: 600,
+            temperature: 0.3,
+          }),
+        });
+
+        if (!retry.ok) {
+          const errBody = await retry.json().catch(() => ({}));
+          lastError = errBody?.error?.message || `HTTP ${retry.status}`;
+          console.warn(`Retry also failed for ${model}: ${lastError}`);
+          continue;
+        }
+
+        const retryData = await retry.json();
+        const retryContent = retryData?.choices?.[0]?.message?.content;
+        if (retryContent) {
+          console.log(`✅ Retry success with model: ${model}`);
+          return parseResponse(retryContent);
+        }
+        continue;
+      }
 
       if (!response.ok) {
         const errBody = await response.json().catch(() => ({}));
@@ -76,6 +135,8 @@ export async function summariseText(page1Text, page2Text) {
       }
 
       const data = await response.json();
+      console.log("Full response:", JSON.stringify(data));
+
       const content = data?.choices?.[0]?.message?.content;
 
       if (!content || content.trim() === "") {
@@ -85,9 +146,7 @@ export async function summariseText(page1Text, page2Text) {
       }
 
       console.log(`✅ Success with model: ${model}`);
-
-      const parsed = parseResponse(content);
-      return parsed;
+      return parseResponse(content);
 
     } catch (err) {
       console.warn(`Model ${model} threw error:`, err.message);
