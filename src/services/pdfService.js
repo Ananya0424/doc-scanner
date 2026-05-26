@@ -1,71 +1,125 @@
 // src/services/pdfService.js
 import * as pdfjsLib from "pdfjs-dist";
-import { ERRORS } from "../utils/errorMessages";
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  "pdfjs-dist/build/pdf.worker.min.mjs",
-  import.meta.url
-).toString();
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
 /**
- * Extracts text from a PDF File.
- * Falls back to OCR if pages have no selectable text.
+ * Extracts clean text from a PDF File (up to 2 pages).
+ * - Tries native PDF text layer first (digital PDFs)
+ * - Falls back to OCR if page is scanned / image-based
  */
-export async function extractTextFromPDF(file, runOCR, setStatus) {
-  let pdf;
+export async function extractTextFromPDF(file, runOCR, setStatus = () => {}) {
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const totalPages = Math.min(pdf.numPages, 2);
+  const results = [];
 
-  try {
-    const arrayBuffer = await file.arrayBuffer();
-    pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-  } catch (err) {
-    throw new Error(ERRORS.PDF_CORRUPT);
-  }
+  for (let i = 1; i <= totalPages; i++) {
+    setStatus(`Extracting text from page ${i} of ${totalPages}...`);
+    const page = await pdf.getPage(i);
+    const textContent = await page.getTextContent();
 
-  const totalPages = pdf.numPages;
-  const results = { page1: "", page2: "" };
+    // Group text items into lines based on Y position
+    const lineMap = {};
+    for (const item of textContent.items) {
+      const y = Math.round(item.transform[5]);
+      if (!lineMap[y]) lineMap[y] = [];
+      lineMap[y].push({ x: item.transform[4], text: item.str });
+    }
 
-  for (let i = 1; i <= Math.min(totalPages, 2); i++) {
-    const label = `page${i}`;
-    setStatus?.(`Extracting Page ${i} of ${Math.min(totalPages, 2)}...`);
+    // Sort lines top to bottom, words left to right
+    const sortedYs = Object.keys(lineMap)
+      .map(Number)
+      .sort((a, b) => b - a);
 
-    try {
-      const page = await pdf.getPage(i);
-      const textContent = await page.getTextContent();
-      const rawText = textContent.items.map((item) => item.str).join(" ").trim();
+    let extractedText = "";
+    for (const y of sortedYs) {
+      const line = lineMap[y]
+        .sort((a, b) => a.x - b.x)
+        .map((w) => w.text)
+        .join(" ")
+        .trim();
+      if (line.length > 0) extractedText += line + "\n";
+    }
 
-      if (rawText.length > 10) {
-        // Selectable text found
-        results[label] = rawText;
-      } else {
-        // Scanned PDF — render to canvas and OCR it
-        setStatus?.(`Page ${i} has no text — running OCR...`);
-        const viewport = page.getViewport({ scale: 2.0 });
-        const canvas = document.createElement("canvas");
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        const ctx = canvas.getContext("2d");
-        await page.render({ canvasContext: ctx, viewport }).promise;
+    const cleaned = cleanPDFText(extractedText);
 
-        const blob = await new Promise((res) =>
-          canvas.toBlob(res, "image/png")
-        );
-
-        try {
-          results[label] = await runOCR(blob);
-        } catch {
-          results[label] = ""; // OCR failed for this page — continue
-        }
-      }
-    } catch (err) {
-      // Single page failure — don't crash entire extraction
-      results[label] = "";
+    // If very little text extracted — scanned PDF, use OCR
+    if (cleaned.replace(/\s/g, "").length < 50 && runOCR) {
+      setStatus(`Page ${i} appears scanned — running OCR...`);
+      const ocrText = await ocrPDFPage(page, runOCR);
+      results.push(ocrText);
+    } else {
+      results.push(cleaned);
     }
   }
 
-  // If both pages came back empty
-  if (!results.page1 && !results.page2) {
-    throw new Error(ERRORS.PDF_EMPTY);
-  }
+  return {
+    page1: results[0] || "",
+    page2: results[1] || "",
+  };
+}
 
-  return results;
+/**
+ * Renders a PDF page to canvas at high resolution, then OCRs it
+ */
+async function ocrPDFPage(page, runOCR) {
+  // Scale 2.5 = high resolution = better OCR accuracy
+  const vp = page.getViewport({ scale: 2.5 });
+  const canvas = document.createElement("canvas");
+  canvas.width = vp.width;
+  canvas.height = vp.height;
+
+  const ctx = canvas.getContext("2d");
+
+  // White background — helps OCR with transparent PDFs
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  await page.render({ canvasContext: ctx, viewport: vp }).promise;
+
+  return new Promise((resolve) => {
+    canvas.toBlob(
+      async (blob) => {
+        try {
+          const text = await runOCR(blob);
+          resolve(text || "");
+        } catch {
+          resolve("");
+        }
+      },
+      "image/jpeg",
+      0.95  // high quality = better OCR
+    );
+  });
+}
+
+/**
+ * Clean PDF extracted text — remove noise, fix structure
+ */
+function cleanPDFText(raw) {
+  if (!raw) return "";
+
+  return raw
+    // Remove non-ASCII characters
+    .replace(/[^\x20-\x7E\n\r]/g, " ")
+
+    // Remove lines with only symbols / numbers (no real words)
+    .split("\n")
+    .filter((line) => {
+      const trimmed = line.trim();
+      if (trimmed.length === 0) return false;
+      const words = trimmed.match(/[a-zA-Z]{2,}/g);
+      return words && words.length >= 1;
+    })
+    .join("\n")
+
+    // Fix multiple spaces
+    .replace(/[ \t]{2,}/g, " ")
+
+    // Fix excessive newlines
+    .replace(/\n{3,}/g, "\n\n")
+
+    .trim();
 }

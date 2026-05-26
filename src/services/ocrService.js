@@ -1,47 +1,67 @@
 // src/services/ocrService.js
 import Tesseract from "tesseract.js";
-import { ERRORS } from "../utils/errorMessages";
 
-export async function runOCR(imageSource) {
-  let result;
-
+/**
+ * Runs OCR on a File or Blob and returns cleaned extracted text.
+ */
+export async function runOCR(source) {
   try {
-    result = await Tesseract.recognize(imageSource, "eng", {
-      logger: () => {},
+    const worker = await Tesseract.createWorker("eng", 1, {
+      logger: (m) => {
+        if (m.status === "recognizing text") {
+          console.log(`OCR Progress: ${Math.round(m.progress * 100)}%`);
+        }
+      },
     });
+
+    // Better OCR settings for document scanning
+    await worker.setParameters({
+      tessedit_pageseg_mode: Tesseract.PSM.AUTO,        // auto page layout detection
+      tessedit_char_whitelist:
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,!?;:'\"-()/ &@#%+=[]{}<>\\|_~`^",
+      preserve_interword_spaces: "1",
+    });
+
+    const { data } = await worker.recognize(source);
+    await worker.terminate();
+
+    return cleanOCRText(data.text);
   } catch (err) {
-    throw new Error(ERRORS.OCR_FAILED);
+    console.error("OCR error:", err);
+    throw new Error("OCR failed: " + (err.message || "Unknown error"));
   }
+}
 
-  const text = result?.data?.text?.trim() || "";
-  const confidence = result?.data?.confidence || 0;
-  const words = result?.data?.words || [];
+/**
+ * Deep clean OCR output — remove noise, fix spacing, keep meaningful text
+ */
+function cleanOCRText(raw) {
+  if (!raw) return "";
 
-  // ✅ FIX 1: Confidence bahut kam hai — image/selfie/blurry
-  if (confidence < 50) {
-    return "";
-  }
+  return raw
+    // Remove non-printable / weird unicode characters
+    .replace(/[^\x20-\x7E\n\r]/g, " ")
 
-  // ✅ FIX 2: Words count kam hai — real document mein kam se kam 5 words hote hain
-  if (words.length < 5) {
-    return "";
-  }
+    // Remove standalone single characters that are OCR noise (e.g. "h", "3", "™")
+    .replace(/(?<!\w)[^a-zA-Z0-9\s.,!?;:()\-'"/]{1,2}(?!\w)/g, " ")
 
-  // ✅ FIX 3: High confidence words ka ratio check karo
-  // Real text mein zyada words high confidence ke saath aate hain
-  const highConfidenceWords = words.filter(w => w.confidence > 60);
-  const ratio = highConfidenceWords.length / words.length;
+    // Remove lines that are only symbols or numbers with no real words
+    .split("\n")
+    .filter((line) => {
+      const trimmed = line.trim();
+      if (trimmed.length === 0) return false;
 
-  if (ratio < 0.5) {
-    return ""; // Zyada garbage characters hain real text se
-  }
+      // Keep line only if it has at least 2 real words (letters)
+      const words = trimmed.match(/[a-zA-Z]{2,}/g);
+      return words && words.length >= 1;
+    })
+    .join("\n")
 
-  // ✅ FIX 4: Text mein actual readable words hone chahiye
-  // Regex: kam se kam 3 letter wale real words
-  const realWords = text.match(/\b[a-zA-Z]{3,}\b/g) || [];
-  if (realWords.length < 3) {
-    return ""; // Sirf symbols/numbers/garbage hai
-  }
+    // Fix multiple spaces
+    .replace(/[ \t]{2,}/g, " ")
 
-  return text;
+    // Fix more than 2 consecutive newlines
+    .replace(/\n{3,}/g, "\n\n")
+
+    .trim();
 }
