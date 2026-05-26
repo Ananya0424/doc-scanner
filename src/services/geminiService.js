@@ -1,4 +1,3 @@
-// src/services/geminiService.js
 const OPENROUTER_API_KEY = import.meta.env.VITE_OPENROUTER_API_KEY;
 const API_URL = "https://openrouter.ai/api/v1/chat/completions";
 const MODEL = "deepseek/deepseek-r1-0528:free";
@@ -10,59 +9,79 @@ export async function summariseText(page1Text, page2Text) {
 
   const hasPage1 = page1Text && page1Text.trim().length > 10;
   const hasPage2 = page2Text && page2Text.trim().length > 10;
-  const combined = [page1Text, page2Text].filter(Boolean).join(" ");
 
-  const prompt = `Summarise this document. Return ONLY a JSON object.
-
-PAGE 1: '${hasPage1 ? page1Text : "empty"}'
-PAGE 2: '${hasPage2 ? page2Text : "empty"}'
-
-Rules:
-- page1Summary: 50-80 words about PAGE 1 actual content
-- page2Summary: 50-80 words about PAGE 2 actual content
-- overallConclusion: 60-90 words combining BOTH pages. Must be about the document topic. NEVER write "Document processed successfully".
-
-Return ONLY: {"page1Summary":"...","page2Summary":"...","overallConclusion":"..."}`;
-
-  const response = await fetch(API_URL, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": window.location.origin,
-      "X-Title": "Document Scanner & Summariser",
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: 800,
-      temperature: 0.1,
-    }),
-  });
-
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err?.error?.message || `API error: ${response.status}`);
-  }
-
-  const data = await response.json();
-  const raw = data?.choices?.[0]?.message?.content?.trim();
-  if (!raw) throw new Error("Empty response from API.");
-
-  const jsonMatch = raw.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error("No JSON found.");
-
-  const parsed = JSON.parse(jsonMatch[0]);
-
-  const genericPhrases = ["document processed","text has been summarised","text has been summarized","extracted text","successfully summarised"];
-  const isGeneric = genericPhrases.some(p => parsed.overallConclusion?.toLowerCase().includes(p));
-  if (isGeneric) {
-    parsed.overallConclusion = combined.split(/\s+/).slice(0, 60).join(" ") + "...";
-  }
-
-  return {
-    page1Summary: parsed.page1Summary || "No content for page 1.",
-    page2Summary: parsed.page2Summary || "No content for page 2.",
-    overallConclusion: parsed.overallConclusion || "No conclusion available.",
+  // Get page summaries separately
+  const getSummary = async (text, pageNum) => {
+    if (!text || text.trim().length < 10) return "No content available for this page.";
+    
+    const response = await fetch(API_URL, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": window.location.origin,
+        "X-Title": "Document Scanner",
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        messages: [
+          {
+            role: "user",
+            content: `Write a 60 word summary of this text. Only write the summary, nothing else:\n\n${text}`
+          }
+        ],
+        max_tokens: 200,
+        temperature: 0.1,
+      }),
+    });
+    
+    const data = await response.json();
+    return data?.choices?.[0]?.message?.content?.trim() || text.slice(0, 150) + "...";
   };
+
+  const getConclusion = async (text1, text2) => {
+    const combined = [text1, text2].filter(Boolean).join("\n\n");
+    if (!combined || combined.trim().length < 10) return "No content available.";
+    
+    const response = await fetch(API_URL, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": window.location.origin,
+        "X-Title": "Document Scanner",
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        messages: [
+          {
+            role: "user",
+            content: `Write a 70 word conclusion about this document content. The conclusion must be about the topic of the document. Only write the conclusion paragraph, nothing else:\n\n${combined}`
+          }
+        ],
+        max_tokens: 200,
+        temperature: 0.1,
+      }),
+    });
+    
+    const data = await response.json();
+    const result = data?.choices?.[0]?.message?.content?.trim();
+    
+    // Final safety check
+    const bad = ["document processed", "summarised", "summarized", "extracted text"];
+    const isBad = bad.some(p => result?.toLowerCase().includes(p));
+    
+    if (isBad || !result) {
+      return combined.split(/\s+/).slice(0, 70).join(" ") + "...";
+    }
+    return result;
+  };
+
+  const [page1Summary, page2Summary, overallConclusion] = await Promise.all([
+    getSummary(page1Text, 1),
+    getSummary(page2Text, 2),
+    getConclusion(page1Text, page2Text),
+  ]);
+
+  return { page1Summary, page2Summary, overallConclusion };
 }
