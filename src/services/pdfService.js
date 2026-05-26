@@ -5,14 +5,15 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
   "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
 /**
- * Extracts clean text from a PDF File (up to 2 pages).
+ * Extracts clean text from a PDF File.
+ * - Processes up to 10 pages (page1 + page2 separately, rest as extra)
  * - Tries native PDF text layer first (digital PDFs)
  * - Falls back to OCR if page is scanned / image-based
  */
 export async function extractTextFromPDF(file, runOCR, setStatus = () => {}) {
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-  const totalPages = Math.min(pdf.numPages, 2);
+  const totalPages = Math.min(pdf.numPages, 10); // Support up to 10 pages
   const results = [];
 
   for (let i = 1; i <= totalPages; i++) {
@@ -55,9 +56,21 @@ export async function extractTextFromPDF(file, runOCR, setStatus = () => {}) {
     }
   }
 
+  // Combine extra pages (3+) into page2 text for better summarisation
+  let page2Text = results[1] || "";
+  if (results.length > 2) {
+    const extraPages = results.slice(2);
+    const extraText = extraPages
+      .map((text, idx) => `[Page ${idx + 3}] ${text}`)
+      .join("\n\n");
+    page2Text = page2Text
+      ? `${page2Text}\n\n${extraText}`
+      : extraText;
+  }
+
   return {
     page1: results[0] || "",
-    page2: results[1] || "",
+    page2: page2Text,
   };
 }
 
@@ -90,7 +103,7 @@ async function ocrPDFPage(page, runOCR) {
         }
       },
       "image/jpeg",
-      0.95  // high quality = better OCR
+      0.95 // high quality = better OCR
     );
   });
 }
