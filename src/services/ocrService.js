@@ -2,16 +2,12 @@
 import Tesseract from "tesseract.js";
 import { ERRORS } from "../utils/errorMessages";
 
-/**
- * Runs OCR on an image File or Blob.
- * Throws descriptive errors for empty/blurry results.
- */
 export async function runOCR(imageSource) {
   let result;
 
   try {
     result = await Tesseract.recognize(imageSource, "eng", {
-      logger: () => {}, // suppress verbose logs
+      logger: () => {},
     });
   } catch (err) {
     throw new Error(ERRORS.OCR_FAILED);
@@ -19,15 +15,32 @@ export async function runOCR(imageSource) {
 
   const text = result?.data?.text?.trim() || "";
   const confidence = result?.data?.confidence || 0;
+  const words = result?.data?.words || [];
 
-  // Empty result
-  if (!text || text.length < 5) {
-    throw new Error(ERRORS.OCR_EMPTY);
+  // ✅ FIX 1: Confidence bahut kam hai — image/selfie/blurry
+  if (confidence < 50) {
+    return "";
   }
 
-  // Low confidence = likely blurry or noisy scan
-  if (confidence < 30) {
-    throw new Error(ERRORS.OCR_BLURRY);
+  // ✅ FIX 2: Words count kam hai — real document mein kam se kam 5 words hote hain
+  if (words.length < 5) {
+    return "";
+  }
+
+  // ✅ FIX 3: High confidence words ka ratio check karo
+  // Real text mein zyada words high confidence ke saath aate hain
+  const highConfidenceWords = words.filter(w => w.confidence > 60);
+  const ratio = highConfidenceWords.length / words.length;
+
+  if (ratio < 0.5) {
+    return ""; // Zyada garbage characters hain real text se
+  }
+
+  // ✅ FIX 4: Text mein actual readable words hone chahiye
+  // Regex: kam se kam 3 letter wale real words
+  const realWords = text.match(/\b[a-zA-Z]{3,}\b/g) || [];
+  if (realWords.length < 3) {
+    return ""; // Sirf symbols/numbers/garbage hai
   }
 
   return text;

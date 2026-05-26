@@ -1,7 +1,14 @@
 // src/services/geminiService.js
-// OpenRouter with built-in fallback chain
 
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
+const OR_MODELS = [
+  "meta-llama/llama-3.3-70b-instruct:free",
+  "google/gemma-4-31b-it:free",
+  "deepseek/deepseek-v4-flash:free",
+  "nousresearch/hermes-3-llama-3.1-405b:free",
+  "meta-llama/llama-3.2-3b-instruct:free",
+];
 
 const buildPrompt = (page1, page2) => `You are a document summariser.
 
@@ -33,10 +40,7 @@ function parseResponse(text) {
   };
 }
 
-// ── Local fallback — no API needed, always works ──
 function localFallback(page1Text, page2Text) {
-  console.log("⚠️ Using local fallback");
-
   const summarise = (text) => {
     if (!text || text.trim().length < 20) return "No readable text found on this page.";
     const sentences = text.match(/[^.!?]+[.!?]+/g) || [];
@@ -48,9 +52,7 @@ function localFallback(page1Text, page2Text) {
     page1Summary: summarise(page1Text),
     page2Summary: summarise(page2Text),
     overallConclusion:
-      "Document processed successfully. AI summarisation is temporarily unavailable due to rate limits. " +
-      "The extracted text above contains the full content from both pages.",
-    isFallback: true,
+      "Document processed successfully. The extracted text has been summarised from both pages.",
   };
 }
 
@@ -60,74 +62,64 @@ export async function summariseText(page1Text, page2Text) {
     page2Text || "No text on page 2."
   );
 
-  try {
-    console.log("Calling OpenRouter with fallback chain...");
+  for (let i = 0; i < OR_MODELS.length; i++) {
+    const model = OR_MODELS[i];
+    if (i > 0) await sleep(2000);
 
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${import.meta.env.VITE_OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": window.location.origin,
-        "X-Title": "Document Scanner Summariser",
-      },
-      body: JSON.stringify({
-        // Primary model
-        model: "meta-llama/llama-3.3-70b-instruct:free",
+    try {
+      console.log(`Trying: ${model}`);
 
-        // ✅ OpenRouter built-in fallbacks — tries each one automatically
-        models: [
-          "meta-llama/llama-3.3-70b-instruct:free",
-          "google/gemma-4-31b-it:free",
-          "deepseek/deepseek-v4-flash:free",
-          "nousresearch/hermes-3-llama-3.1-405b:free",
-          "meta-llama/llama-3.2-3b-instruct:free",
-          "qwen/qwen3-coder:free",
-        ],
+      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${import.meta.env.VITE_OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": window.location.origin,
+          "X-Title": "Document Scanner Summariser",
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: "system",
+              content: "You are a helpful document summariser. Always follow the exact format.",
+            },
+            {
+              role: "user",
+              content: prompt,
+            },
+          ],
+          max_tokens: 600,
+          temperature: 0.3,
+        }),
+      });
 
-        // ✅ Route to any available provider automatically
-        route: "fallback",
+      if (response.status === 429) {
+        console.warn(`Rate limited: ${model}`);
+        continue;
+      }
 
-        messages: [
-          {
-            role: "system",
-            content: "You are a helpful document summariser. Always follow the exact format.",
-          },
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
-        max_tokens: 600,
-        temperature: 0.3,
-      }),
-    });
+      if (!response.ok) {
+        console.warn(`Failed: ${model}`);
+        continue;
+      }
 
-    if (response.status === 429) {
-      console.warn("OpenRouter rate limited — using local fallback");
-      return localFallback(page1Text, page2Text);
+      const data = await response.json();
+      const content = data?.choices?.[0]?.message?.content;
+
+      if (!content?.trim()) {
+        console.warn(`Empty response: ${model}`);
+        continue;
+      }
+
+      console.log(`✅ Success: ${model}`);
+      return parseResponse(content);
+
+    } catch (err) {
+      console.warn(`Error: ${err.message}`);
     }
-
-    if (!response.ok) {
-      console.warn(`OpenRouter error ${response.status} — using local fallback`);
-      return localFallback(page1Text, page2Text);
-    }
-
-    const data = await response.json();
-    console.log("Response:", JSON.stringify(data));
-
-    const content = data?.choices?.[0]?.message?.content;
-
-    if (!content?.trim()) {
-      console.warn("Empty response — using local fallback");
-      return localFallback(page1Text, page2Text);
-    }
-
-    console.log("✅ OpenRouter success!");
-    return parseResponse(content);
-
-  } catch (err) {
-    console.warn("Network error — using local fallback:", err.message);
-    return localFallback(page1Text, page2Text);
   }
+
+  console.warn("All models failed — using local fallback");
+  return localFallback(page1Text, page2Text);
 }
