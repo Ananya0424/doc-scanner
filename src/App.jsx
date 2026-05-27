@@ -265,7 +265,7 @@ export default function App() {
               </button>
             </div>
 
-            {/* ✅ Page 1 — sirf tab dikhao jab text ho */}
+            {/* ✅ Page 1 — */}
             {extractedText.page1 && (
               <div className="mb-4">
                 <div className="flex items-center gap-2 mb-2">
@@ -284,7 +284,7 @@ export default function App() {
               </div>
             )}
 
-            {/* ✅ Page 2 — sirf tab dikhao jab text ho */}
+            {/* ✅ Page 2 —  */}
             {extractedText.page2 && (
               <div className="mb-4">
                 <div className="flex items-center gap-2 mb-2">
@@ -303,7 +303,7 @@ export default function App() {
               </div>
             )}
 
-            {/* ✅ Dono pages empty — sirf yeh ek message dikhao */}
+            {/* ✅ */}
             {!extractedText.page1 && !extractedText.page2 && (
               <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm mb-4">
                 ❌ No text could be extracted from any page. Please upload a document with readable printed or handwritten text.
